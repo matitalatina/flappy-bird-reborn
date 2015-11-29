@@ -1,6 +1,6 @@
 /**
 * @author       Richard Davey <rich@photonstorm.com>
-* @copyright    2014 Photon Storm Ltd.
+* @copyright    2015 Photon Storm Ltd.
 * @license      {@link https://github.com/photonstorm/phaser/blob/master/license.txt|MIT License}
 */
 
@@ -9,7 +9,6 @@
 * the Sprite itself. For example you can set the velocity, bounce values etc all on the Body.
 *
 * @class Phaser.Physics.Ninja.Body
-* @classdesc Ninja Physics Body Constructor
 * @constructor
 * @param {Phaser.Physics.Ninja} system - The physics system this Body belongs to.
 * @param {Phaser.Sprite} sprite - The Sprite object this physics body belongs to.
@@ -25,9 +24,9 @@ Phaser.Physics.Ninja.Body = function (system, sprite, type, id, radius, x, y, wi
 
     sprite = sprite || null;
 
-    if (typeof type === 'undefined') { type = 1; }
-    if (typeof id === 'undefined') { id = 1; }
-    if (typeof radius === 'undefined') { radius = 16; }
+    if (type === undefined) { type = 1; }
+    if (id === undefined) { id = 1; }
+    if (radius === undefined) { radius = 16; }
 
     /**
     * @property {Phaser.Sprite} sprite - Reference to the parent Sprite.
@@ -546,3 +545,25 @@ Object.defineProperty(Phaser.Physics.Ninja.Body.prototype, "angle", {
 
 });
 
+/**
+* Render Sprite's Body.
+*
+* @method Phaser.Physics.Ninja.Body#render
+* @param {object} context - The context to render to.
+* @param {Phaser.Physics.Ninja.Body} body - The Body to render.
+* @param {string} [color='rgba(0,255,0,0.4)'] - color of the debug shape to be rendered. (format is css color string).
+* @param {boolean} [filled=true] - Render the shape as a filled (default, true) or a stroked (false)
+*/
+Phaser.Physics.Ninja.Body.render = function(context, body, color, filled) {
+    color = color || 'rgba(0,255,0,0.4)';
+
+    if (filled === undefined)
+    {
+        filled = true;
+    }
+
+    if (body.aabb || body.circle)
+    {
+        body.shape.render(context, body.game.camera.x, body.game.camera.y, color, filled);
+    }
+};

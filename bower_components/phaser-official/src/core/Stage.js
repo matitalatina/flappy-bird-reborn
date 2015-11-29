@@ -1,41 +1,32 @@
 /**
 * @author       Richard Davey <rich@photonstorm.com>
-* @copyright    2014 Photon Storm Ltd.
+* @copyright    2015 Photon Storm Ltd.
 * @license      {@link https://github.com/photonstorm/phaser/blob/master/license.txt|MIT License}
 */
 
 /**
-* The Stage controls the canvas on which everything is displayed. It handles display within the browser,
-* focus handling, game resizing, scaling and the pause, boot and orientation screens.
+* The Stage controls root level display objects upon which everything is displayed.
+* It also handles browser visibility handling and the pausing due to loss of focus.
 *
 * @class Phaser.Stage
-* @extends PIXI.Stage
+* @extends PIXI.DisplayObjectContainer
 * @constructor
 * @param {Phaser.Game} game - Game reference to the currently running game.
-* @param {number} width - Width of the canvas element.
-* @param {number} height - Height of the canvas element.
  */
-Phaser.Stage = function (game, width, height) {
+Phaser.Stage = function (game) {
 
     /**
     * @property {Phaser.Game} game - A reference to the currently running Game.
     */
     this.game = game;
 
-    /**
-    * @property {Phaser.Point} offset - Holds the offset coordinates of the Game.canvas from the top-left of the browser window (used by Input and other classes)
-    */
-    this.offset = new Phaser.Point();
-
-    PIXI.Stage.call(this, 0x000000, false);
+    PIXI.DisplayObjectContainer.call(this);
 
     /**
     * @property {string} name - The name of this object.
     * @default
     */
     this.name = '_stage_root';
-
-    this.interactive = false;
 
     /**
     * @property {boolean} disableVisibilityChange - By default if the browser tab loses focus the game will pause. You can stop that behaviour by setting this property to true.
@@ -44,16 +35,24 @@ Phaser.Stage = function (game, width, height) {
     this.disableVisibilityChange = false;
 
     /**
-    * @property {number|false} checkOffsetInterval - The time (in ms) between which the stage should check to see if it has moved.
-    * @default
-    */
-    this.checkOffsetInterval = 2500;
-
-    /**
     * @property {boolean} exists - If exists is true the Stage and all children are updated, otherwise it is skipped.
     * @default
     */
     this.exists = true;
+
+    /**
+    * @property {PIXI.Matrix} worldTransform - Current transform of the object based on world (parent) factors
+    * @private
+    * @readOnly
+    */
+    this.worldTransform = new PIXI.Matrix();
+
+    /**
+    * @property {Phaser.Stage} stage - The stage reference (the Stage is its own stage)
+    * @private
+    * @readOnly
+    */
+    this.stage = this;
 
     /**
     * @property {number} currentRenderOrderID - Reset each frame, keeps a count of the total number of objects updated.
@@ -67,31 +66,69 @@ Phaser.Stage = function (game, width, height) {
     this._hiddenVar = 'hidden';
 
     /**
-    * @property {number} _nextOffsetCheck - The time to run the next offset check.
+    * @property {function} _onChange - The blur/focus event handler.
     * @private
     */
-    this._nextOffsetCheck = 0;
+    this._onChange = null;
 
     /**
-    * @property {number} _backgroundColor - Stage background color.
+    * @property {number} _bgColor - Stage background color object. Populated by setBackgroundColor.
     * @private
     */
-    this._backgroundColor = 0x000000;
+    this._bgColor = { r: 0, g: 0, b: 0, a: 0, color: 0, rgba: '#000000' };
+
+    if (!this.game.transparent)
+    {
+        //  transparent = 0,0,0,0 - otherwise r,g,b,1
+        this._bgColor.a = 1;
+    }
 
     if (game.config)
     {
         this.parseConfig(game.config);
     }
-    else
+
+};
+
+Phaser.Stage.prototype = Object.create(PIXI.DisplayObjectContainer.prototype);
+Phaser.Stage.prototype.constructor = Phaser.Stage;
+
+/**
+* Parses a Game configuration object.
+*
+* @method Phaser.Stage#parseConfig
+* @protected
+* @param {object} config -The configuration object to parse.
+*/
+Phaser.Stage.prototype.parseConfig = function (config) {
+
+    if (config['disableVisibilityChange'])
     {
-        this.game.canvas = Phaser.Canvas.create(width, height);
-        this.game.canvas.style['-webkit-full-screen'] = 'width: 100%; height: 100%';
+        this.disableVisibilityChange = config['disableVisibilityChange'];
+    }
+
+    if (config['backgroundColor'])
+    {
+        this.setBackgroundColor(config['backgroundColor']);
     }
 
 };
 
-Phaser.Stage.prototype = Object.create(PIXI.Stage.prototype);
-Phaser.Stage.prototype.constructor = Phaser.Stage;
+/**
+* Initialises the stage and adds the event listeners.
+* @method Phaser.Stage#boot
+* @private
+*/
+Phaser.Stage.prototype.boot = function () {
+
+    Phaser.DOM.getOffset(this.game.canvas, this.offset);
+
+    Phaser.Canvas.setUserSelect(this.game.canvas, 'none');
+    Phaser.Canvas.setTouchAction(this.game.canvas, 'none');
+
+    this.checkVisibility();
+
+};
 
 /**
 * This is called automatically after the plugins preUpdate and before the State.update.
@@ -104,9 +141,7 @@ Phaser.Stage.prototype.preUpdate = function () {
     this.currentRenderOrderID = 0;
 
     //  This can't loop in reverse, we need the orderID to be in sequence
-    var len = this.children.length;
-
-    for (var i = 0; i < len; i++)
+    for (var i = 0; i < this.children.length; i++)
     {
         this.children[i].preUpdate();
     }
@@ -167,96 +202,29 @@ Phaser.Stage.prototype.postUpdate = function () {
         }
     }
 
-    if (this.checkOffsetInterval !== false)
-    {
-        if (this.game.time.now > this._nextOffsetCheck)
-        {
-            Phaser.Canvas.getOffset(this.game.canvas, this.offset);
-            this._nextOffsetCheck = this.game.time.now + this.checkOffsetInterval;
-        }
-    }
-
 };
 
 /**
-* Parses a Game configuration object.
-*
-* @method Phaser.Stage#parseConfig
-* @protected
+* Updates the transforms for all objects on the display list.
+* This overrides the Pixi default as we don't need the interactionManager, but do need the game property check.
+* 
+* @method Phaser.Stage#updateTransform
 */
-Phaser.Stage.prototype.parseConfig = function (config) {
+Phaser.Stage.prototype.updateTransform = function () {
 
-    if (config['canvasID'])
-    {
-        this.game.canvas = Phaser.Canvas.create(this.game.width, this.game.height, config['canvasID']);
-    }
-    else
-    {
-        this.game.canvas = Phaser.Canvas.create(this.game.width, this.game.height);
-    }
+    this.worldAlpha = 1;
 
-    if (config['canvasStyle'])
+    for (var i = 0; i < this.children.length; i++)
     {
-        this.game.canvas.stlye = config['canvasStyle'];
-    }
-    else
-    {
-        this.game.canvas.style['-webkit-full-screen'] = 'width: 100%; height: 100%';
-    }
-
-    if (config['checkOffsetInterval'])
-    {
-        this.checkOffsetInterval = config['checkOffsetInterval'];
-    }
-
-    if (config['disableVisibilityChange'])
-    {
-        this.disableVisibilityChange = config['disableVisibilityChange'];
-    }
-
-    if (config['fullScreenScaleMode'])
-    {
-        this.fullScreenScaleMode = config['fullScreenScaleMode'];
-    }
-
-    if (config['scaleMode'])
-    {
-        this.scaleMode = config['scaleMode'];
-    }
-
-    if (config['backgroundColor'])
-    {
-        this.backgroundColor = config['backgroundColor'];
+        this.children[i].updateTransform();
     }
 
 };
 
 /**
-* Initialises the stage and adds the event listeners.
-* @method Phaser.Stage#boot
-* @private
-*/
-Phaser.Stage.prototype.boot = function () {
-
-    Phaser.Canvas.getOffset(this.game.canvas, this.offset);
-
-    this.bounds = new Phaser.Rectangle(this.offset.x, this.offset.y, this.game.width, this.game.height);
-
-    var _this = this;
-
-    this._onChange = function (event) {
-        return _this.visibilityChange(event);
-    };
-
-    Phaser.Canvas.setUserSelect(this.game.canvas, 'none');
-    Phaser.Canvas.setTouchAction(this.game.canvas, 'none');
-
-    this.checkVisibility();
-
-};
-
-/**
-* Starts a page visibility event listener running, or window.blur/focus if not supported by the browser.
+* Starts a page visibility event listener running, or window.onpagehide/onpageshow if not supported by the browser.
+* Also listens for window.onblur and window.onfocus.
+* 
 * @method Phaser.Stage#checkVisibility
 */
 Phaser.Stage.prototype.checkVisibility = function () {
@@ -282,31 +250,44 @@ Phaser.Stage.prototype.checkVisibility = function () {
         this._hiddenVar = null;
     }
 
+    var _this = this;
+
+    this._onChange = function (event) {
+        return _this.visibilityChange(event);
+    };
+
     //  Does browser support it? If not (like in IE9 or old Android) we need to fall back to blur/focus
     if (this._hiddenVar)
     {
         document.addEventListener(this._hiddenVar, this._onChange, false);
     }
 
-    window.onpagehide = this._onChange;
-    window.onpageshow = this._onChange;
-
     window.onblur = this._onChange;
     window.onfocus = this._onChange;
+
+    window.onpagehide = this._onChange;
+    window.onpageshow = this._onChange;
+    
+    if (this.game.device.cocoonJSApp)
+    {
+        CocoonJS.App.onSuspended.addEventListener(function () {
+            Phaser.Stage.prototype.visibilityChange.call(_this, { type: "pause" });
+        });
+
+        CocoonJS.App.onActivated.addEventListener(function () {
+            Phaser.Stage.prototype.visibilityChange.call(_this, { type: "resume" });
+        });
+    }
 
 };
 
 /**
 * This method is called when the document visibility is changed.
+* 
 * @method Phaser.Stage#visibilityChange
 * @param {Event} event - Its type will be used to decide whether the game should be paused or not.
 */
 Phaser.Stage.prototype.visibilityChange = function (event) {
-
-    if (this.disableVisibilityChange)
-    {
-        return;
-    }
 
     if (event.type === 'pagehide' || event.type === 'blur' || event.type === 'pageshow' || event.type === 'focus')
     {
@@ -322,7 +303,12 @@ Phaser.Stage.prototype.visibilityChange = function (event) {
         return;
     }
 
-    if (document.hidden || document.mozHidden || document.msHidden || document.webkitHidden)
+    if (this.disableVisibilityChange)
+    {
+        return;
+    }
+
+    if (document.hidden || document.mozHidden || document.msHidden || document.webkitHidden || event.type === "pause")
     {
         this.game.gamePaused(event);
     }
@@ -334,18 +320,50 @@ Phaser.Stage.prototype.visibilityChange = function (event) {
 };
 
 /**
-* Sets the background color for the stage.
+* Sets the background color for the Stage.
 *
-* @name Phaser.Stage#setBackgroundColor
-* @param {number} backgroundColor - The color of the background, easiest way to pass this in is in hex format like: 0xFFFFFF for white.
+* The color can be given as a hex string (`'#RRGGBB'`), a CSS color string (`'rgb(r,g,b)'`), or a numeric value (`0xRRGGBB`).
+*
+* An alpha channel is _not_ supported and will be ignored.
+*
+* If you've set your game to be transparent then calls to setBackgroundColor are ignored.
+*
+* @method Phaser.Stage#setBackgroundColor
+* @param {number|string} color - The color of the background.
 */
-Phaser.Stage.prototype.setBackgroundColor = function(backgroundColor)
-{
-    this._backgroundColor = backgroundColor || 0x000000;
-    this.backgroundColorSplit = PIXI.hex2rgb(this.backgroundColor);
-    var hex = this._backgroundColor.toString(16);
-    hex = '000000'.substr(0, 6 - hex.length) + hex;
-    this.backgroundColorString = '#' + hex;
+Phaser.Stage.prototype.setBackgroundColor = function (color) {
+
+    if (this.game.transparent) { return; }
+
+    Phaser.Color.valueToColor(color, this._bgColor);
+    Phaser.Color.updateColor(this._bgColor);
+
+    //  For gl.clearColor (canvas uses _bgColor.rgba)
+    this._bgColor.r /= 255;
+    this._bgColor.g /= 255;
+    this._bgColor.b /= 255;
+    this._bgColor.a = 1;
+
+};
+
+/**
+* Destroys the Stage and removes event listeners.
+*
+* @method Phaser.Stage#destroy
+*/
+Phaser.Stage.prototype.destroy  = function () {
+
+    if (this._hiddenVar)
+    {
+        document.removeEventListener(this._hiddenVar, this._onChange, false);
+    }
+
+    window.onpagehide = null;
+    window.onpageshow = null;
+
+    window.onblur = null;
+    window.onfocus = null;
+
 };
 
 /**
@@ -355,22 +373,14 @@ Phaser.Stage.prototype.setBackgroundColor = function(backgroundColor)
 Object.defineProperty(Phaser.Stage.prototype, "backgroundColor", {
 
     get: function () {
-        return this._backgroundColor;
+
+        return this._bgColor.color;
+
     },
 
     set: function (color) {
 
-        this._backgroundColor = color;
-
-        if (this.game.transparent === false)
-        {
-            if (typeof color === 'string')
-            {
-                color = Phaser.Color.hexToRGB(color);
-            }
-
-            this.setBackgroundColor(color);
-        }
+        this.setBackgroundColor(color);
 
     }
 
@@ -386,7 +396,7 @@ Object.defineProperty(Phaser.Stage.prototype, "smoothed", {
 
     get: function () {
 
-        return !PIXI.scaleModes.LINEAR;
+        return PIXI.scaleModes.DEFAULT === PIXI.scaleModes.LINEAR;
 
     },
 
@@ -394,11 +404,11 @@ Object.defineProperty(Phaser.Stage.prototype, "smoothed", {
 
         if (value)
         {
-            PIXI.scaleModes.LINEAR = 0;
+            PIXI.scaleModes.DEFAULT = PIXI.scaleModes.LINEAR;
         }
         else
         {
-            PIXI.scaleModes.LINEAR = 1;
+            PIXI.scaleModes.DEFAULT = PIXI.scaleModes.NEAREST;
         }
     }
 
